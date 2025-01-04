@@ -1,5 +1,3 @@
-# twilio_server.py
-
 from flask import Flask, request, jsonify
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.rest import Client
@@ -90,12 +88,8 @@ def status_callback():
 
 @app.route("/process-input", methods=['POST'])
 def process_input():
-
-    print("Processing the inputs.......")
     try:
         content_type = request.headers.get('Content-Type')
-
-        print(str(content_type).lower())
 
         if 'application/json' in str(content_type).lower():
             # Handle JSON request
@@ -113,29 +107,15 @@ def process_input():
             print(f"Received unsupported Content-Type: {content_type}")
             return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
 
-        print(speech_result)
-
-        # greet = VoiceResponse()
-        # greet.play("https://api.twilio.com/cowbell.mp3")
-        # print(str(greet))
-
         response = VoiceResponse()
         if speech_result:
-            print("Processing the speech response....")
 
             llm_response = conversation_chain.invoke({
                 "input": speech_result,
                 "chat_history": chat_history
             })
 
-            print("waiting for 30 seconds....")
-            response.pause(5)
-            print(str(response))
-
-            print("Speak what the LLM says.....")
             response.say(llm_response, voice=VOICE)
-            print(str(response))
-            
         elif digits:
             response.say(f"You pressed: {digits}", voice=VOICE)
         else:

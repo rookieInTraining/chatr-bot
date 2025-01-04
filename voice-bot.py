@@ -1,25 +1,11 @@
-# voice_bot_ui.py
-
 import streamlit as st
 from twilio.twiml.voice_response import VoiceResponse
 from twilio.rest import Client
 from twilio.http.http_client import TwilioHttpClient
 
-from datetime import datetime
-import os
-from dotenv import load_dotenv
-from queue import Queue
-from langchain_ollama import OllamaLLM
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.output_parsers import StrOutputParser
-from operator import itemgetter
-import logging
 import os
 from dotenv import load_dotenv
 import time
-from datetime import datetime
-from collections import deque
 from twilio_server import log_queue, error_queue, client, TWILIO_PHONE_NUMBER
 
 # Load environment variables
@@ -37,7 +23,7 @@ twiml_http_client = TwilioHttpClient(timeout=120)
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, http_client=twiml_http_client)
 
 def validate_phone_number(phone):
-    print("""Validate phone number format (basic E.164 check).""")
+    
     return phone and phone.startswith('+') and len(phone) >= 10
 
 def main():
@@ -56,13 +42,13 @@ def main():
                 response = VoiceResponse()
                 response.say("Hello! How can I help you today?", voice=VOICE)
                 response.gather(
-                    input='speech dtmf',
-                    action=os.getenv('NGROK_URL') + "/process-input",
-                    timeout=5
+                    input='speech dtmf',                # Accept both speech and keypad input
+                    action='/process-input',            # Send the next input back to this same endpoint
+                    method='POST',
+                    timeout=5,                          # Wait 5 seconds for input
+                    speechTimeout='auto'                # Automatically detect when speech is complete
                 )
-
-                print("Triggerin the call...")
-
+                
                 call = client.calls.create(
                     to=phone_number,
                     from_=TWILIO_PHONE_NUMBER,
@@ -73,10 +59,12 @@ def main():
 
                 st.success(f"Call placed successfully! Call SID: {call.sid}")
 
+                prev_state = ""
                 while True:
                     current_call = client.calls(call.sid).fetch()
-                    print(str(current_call))
-                    st.info(f"Current status: {current_call.status}")
+                    
+                    if current_call.status != prev_state:
+                        st.info(f"Current status: {current_call.status}")
                     if current_call.status == "completed":
                         st.success("Call completed.")
                         break

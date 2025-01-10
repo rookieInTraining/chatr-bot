@@ -43,7 +43,7 @@ def main():
                 response.say("Hello! How can I help you today?", voice=VOICE)
                 response.gather(
                     input='speech dtmf',                # Accept both speech and keypad input
-                    action='/process-input',            # Send the next input back to this same endpoint
+                    action=os.getenv('NGROK_URL') + '/process-input',            # Send the next input back to this same endpoint
                     method='POST',
                     timeout=5,                          # Wait 5 seconds for input
                     speechTimeout='auto'                # Automatically detect when speech is complete
@@ -60,15 +60,16 @@ def main():
                 st.success(f"Call placed successfully! Call SID: {call.sid}")
 
                 prev_state = ""
-                while True:
-                    current_call = client.calls(call.sid).fetch()
-                    
-                    if current_call.status != prev_state:
-                        st.info(f"Current status: {current_call.status}")
-                    if current_call.status == "completed":
-                        st.success("Call completed.")
-                        break
-                    time.sleep(10)
+                with st.spinner("Call in progress..."):
+                    while True:
+                        current_call = client.calls(call.sid).fetch()
+                        
+                        if current_call.status != prev_state:
+                            st.info(f"Current status: {current_call.status}")
+                        if current_call.status == "completed":
+                            st.success("Call completed.")
+                            break
+                        time.sleep(10)
             except Exception as e:
                 st.error(f"Error placing call: {str(e)}")
 

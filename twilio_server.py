@@ -17,7 +17,7 @@ import logging
 # Load environment variables for configuration
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 # Initialize our communication queues that will be shared with Streamlit
 log_queue = Queue()
@@ -116,6 +116,8 @@ def process_input():
             })
 
             response.say(llm_response, voice=VOICE)
+
+            print(f"=====================================\n{str(response)}\n=====================================")
         elif digits:
             response.say(f"You pressed: {digits}", voice=VOICE)
         else:
@@ -124,7 +126,7 @@ def process_input():
         # Add the gather verb to continue the conversation
         gather = response.gather(
             input='speech dtmf',  # Accept both speech and keypad input
-            action='/process-input',  # Send the next input back to this same endpoint
+            action=os.getenv('NGROK_URL') + '/process-input',  # Send the next input back to this same endpoint
             method='POST',
             timeout=5,  # Wait 5 seconds for input
             speechTimeout='auto'  # Automatically detect when speech is complete
@@ -140,7 +142,7 @@ def process_input():
         # Even on error, continue the conversation
         gather = error_response.gather(
             input='speech dtmf',
-            action='/process-input',
+            action=os.getenv('NGROK_URL') + '/process-input',
             method='POST',
             timeout=5,
             speechTimeout='auto'

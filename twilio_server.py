@@ -1,41 +1,24 @@
 from flask import Flask, request, jsonify
-from twilio.twiml.voice_response import VoiceResponse
-from twilio.rest import Client
-from twilio.http.http_client import TwilioHttpClient
-
+import logging
 from datetime import datetime
-import os
-from dotenv import load_dotenv
-from queue import Queue
+import json
+from mqtt_handler import MQTTHandler
+from twilio_handler import TwilioHandler
 from langchain_ollama import OllamaLLM
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, AIMessage
 from langchain_core.output_parsers import StrOutputParser
 from operator import itemgetter
-import logging
 
-# Load environment variables for configuration
-load_dotenv()
-
-logging.basicConfig(level=logging.DEBUG)
-
-# Initialize our communication queues that will be shared with Streamlit
-log_queue = Queue()
-error_queue = Queue()
-
-# Twilio Configuration
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
-VOICE = os.getenv("APP_VOICE")
-
-twiml_http_client = TwilioHttpClient(timeout=120)
-
-# Initialize Twilio client
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, http_client=twiml_http_client)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize Flask application
 app = Flask(__name__)
+
+# Initialize handlers
+mqtt_handler = MQTTHandler(client_id="flask-mqtt-client")
+twilio_handler = TwilioHandler()
 
 # Initialize LLM and conversation chain
 try:
@@ -59,95 +42,98 @@ try:
     
     conversation_chain = create_chain()
 except Exception as e:
-    print(f"Failed to initialize LLM: {e}")
+    logger.error(f"Failed to initialize LLM: {e}")
     conversation_chain = None
 
-# Store chat history in a way accessible to both Flask and Streamlit
+# Store chat history
 chat_history = []
+
+def get_response(speech_result, digits):
+    """Get appropriate response based on input."""
+    if speech_result and conversation_chain:
+        return conversation_chain.invoke({
+            "input": speech_result,
+            "chat_history": chat_history
+        })
+    elif digits:
+        return f"You pressed: {digits}"
+    else:
+        return "No input received."
 
 @app.route("/status_callback", methods=['POST'])
 def status_callback():
-    print("""Handle Twilio call status updates and recording completions.""")
+    """Handle Twilio call status updates and recording completions."""
     try:
         data = request.form.to_dict()
         data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         data['type'] = 'status_update'
         
-        # Send to queue for Streamlit to process
-        log_queue.put(data)
-
-        call_status = data.get('CallStatus')
-        print(f"Current status of the call: {call_status}")
+        try:
+            mqtt_handler.publish(data)
+            logger.info(f"Published status update: {data['CallStatus']}")
+        except Exception as e:
+            logger.error(f"Failed to publish status to MQTT: {e}")
         
-        return jsonify({"status": "success", "message": f"Status update processed"}), 200
+        return jsonify({"status": "success", "message": "Status update processed"}), 200
         
     except Exception as e:
-        print(f"Encountered an error : {e}")
-        error_queue.put(f"Status callback error: {str(e)}")
+        logger.error(f"Status callback error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/process-input", methods=['POST'])
 def process_input():
+    """Process voice and DTMF input from Twilio."""
+    ollm_resp = {}
+    ollm_resp['date'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
         content_type = request.headers.get('Content-Type')
 
         if 'application/json' in str(content_type).lower():
-            # Handle JSON request
-            data = request.get_json()  # Get JSON body
-            speech_result = data.get('SpeechResult', "")
-            digits = data.get('Digits', "")
-
+            data = request.get_json()
         elif 'application/x-www-form-urlencoded' in str(content_type).lower():
-            # Handle form-urlencoded request
-            speech_result = request.form.get('SpeechResult', "")
-            digits = request.form.get('Digits', "")
-
+            data = request.form.to_dict()
         else:
-            # Unsupported content type
-            print(f"Received unsupported Content-Type: {content_type}")
+            logger.warning(f"Received unsupported Content-Type: {content_type}")
             return jsonify({"error": f"Unsupported Content-Type: {content_type}"}), 415
 
-        response = VoiceResponse()
-        if speech_result:
+        # Add message type and timestamp
+        data['type'] = 'user_input'
+        data['timestamp'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            llm_response = conversation_chain.invoke({
-                "input": speech_result,
-                "chat_history": chat_history
-            })
+        # Publish to MQTT
+        try:
+            mqtt_handler.publish(data)
+            logger.info("Published user input to MQTT")
+        except Exception as e:
+            logger.error(f"Failed to publish input to MQTT: {e}")
 
-            response.say(llm_response, voice=VOICE)
+        # Process the response
+        speech_result = data.get('SpeechResult', '')
+        digits = data.get('Digits', '')
 
-            print(f"=====================================\n{str(response)}\n=====================================")
-        elif digits:
-            response.say(f"You pressed: {digits}", voice=VOICE)
-        else:
-            response.say("No input received.", voice=VOICE)
-
-        # Add the gather verb to continue the conversation
-        gather = response.gather(
-            input='speech dtmf',  # Accept both speech and keypad input
-            action=os.getenv('NGROK_URL') + '/process-input',  # Send the next input back to this same endpoint
-            method='POST',
-            timeout=5,  # Wait 5 seconds for input
-            speechTimeout='auto'  # Automatically detect when speech is complete
+        llm_response = get_response(speech_result, digits)
+        ollm_resp['type'] = 'agent_response'
+        ollm_resp['agent'] = llm_response
+        mqtt_handler.publish(ollm_resp)
+        
+        response = twilio_handler.create_voice_response(
+            message=llm_response
         )
 
         return str(response), 200
     
     except Exception as e:
-        print(f"Error in process_input: {e}")
-        error_response = VoiceResponse()
-        error_response.say("Sorry, something went wrong. Let's try again.", voice=VOICE)
-        
-        # Even on error, continue the conversation
-        gather = error_response.gather(
-            input='speech dtmf',
-            action=os.getenv('NGROK_URL') + '/process-input',
-            method='POST',
-            timeout=5,
-            speechTimeout='auto'
+        logger.error(f"Error in process_input: {e}")
+        error_response = twilio_handler.create_voice_response(
+            message="Sorry, something went wrong. Let's try again."
         )
         return str(error_response), 500
+
+# Connect to MQTT broker when starting the application
+try:
+    mqtt_handler.connect()
+except Exception as e:
+    logger.error(f"Failed to initialize MQTT connection: {e}")
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=5000, debug=True)
